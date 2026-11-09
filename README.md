@@ -51,10 +51,12 @@ Verified (shadow server, Ubuntu 24.04, X11):
   FreeRDP's credential and certificate callbacks show as dialogs, the remote desktop renders live,
   Disconnect returns to the manager
 
+Verified against Windows 11 (0.1.4): login with stored credentials over NLA, dynamic resize through display control.
+
 Implemented but not verified against a real server:
 - clipboard (text only, both directions), audio playback (FreeRDP rdpsnd pulse/alsa), drive and printer
-  redirection, dynamic resize through display control, gateway settings, `.rdp` import/export in the UI,
-  keyring password storage, NLA, H.264 (FreeRDP's FFmpeg; the shadow server cannot encode H.264)
+  redirection, gateway settings, `.rdp` import/export in the UI, H.264 (FreeRDP's FFmpeg; the shadow
+  server cannot encode H.264)
 
 Known gaps:
 - **RAIL:** the engine passes a RemoteApp program to the server, but there is no per-window GTK
@@ -63,7 +65,7 @@ Known gaps:
 - No microphone, smartcard, Wake-on-LAN, IME/Unicode input (keys are sent as scancodes), Windows or macOS.
 - No .deb / AppImage packaging yet. Printer redirection needs CUPS found when FreeRDP is configured.
 - The vendored FreeRDP is a plain copy of the 3.33.0 tree, not a git submodule.
-- Not tested on Wayland or against Windows servers.
+- Not tested on Wayland or against Windows versions other than 11.
 
 ## Differences from docs/DESIGN.md
 

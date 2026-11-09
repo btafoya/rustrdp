@@ -30,4 +30,4 @@ GTK4/libadwaita RDP client with a connection manager, Rust FFI over vendored Fre
 
 ## Not verified yet
 
-Clipboard round trip, audio, drives/printers, dynamic resize, gateway, NLA, real H.264, Wayland, Windows servers. RAIL per-window rendering and .deb/AppImage packaging are not implemented.
+Confirmed on Windows 11 (0.1.4, by the user): login with stored credentials over NLA, dynamic resize. Not confirmed: clipboard round trip, audio, drives/printers, gateway, real H.264, Wayland. RAIL per-window rendering and .deb/AppImage packaging are not implemented.
