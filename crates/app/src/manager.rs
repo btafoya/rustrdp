@@ -72,7 +72,10 @@ pub fn present(app: &adw::Application, store: SharedStore) {
     side_box.append(&side_footer);
     let side_header = adw::HeaderBar::builder()
         .show_end_title_buttons(false)
-        .title_widget(&gtk::Label::new(Some("Connections")))
+        .title_widget(&adw::WindowTitle::new(
+            "Connections",
+            concat!("rustrdp ", env!("CARGO_PKG_VERSION")),
+        ))
         .build();
     let side_view = adw::ToolbarView::new();
     side_view.add_top_bar(&side_header);
@@ -112,7 +115,7 @@ pub fn present(app: &adw::Application, store: SharedStore) {
 
     let window = adw::ApplicationWindow::builder()
         .application(app)
-        .title("rustrdp")
+        .title(concat!("rustrdp ", env!("CARGO_PKG_VERSION")))
         .default_width(1100)
         .default_height(700)
         .content(&split)
@@ -462,11 +465,9 @@ fn import_rdp(ui: &Rc<Ui>) {
             Err(e) => return alert(&ui.window, "Could not read file", &e.to_string()),
         };
         match rdp_core::rdpfile::parse(&name, &text) {
-            Ok(p) => {
-                ui.store.borrow_mut().upsert(p);
-                save(&ui);
-                refresh(&ui);
-            }
+            // An .rdp file is untrusted input (it can share local folders, redirect printers, set a
+            // gateway): nothing is saved until the user has reviewed the profile in the editor and pressed Save.
+            Ok(p) => open_editor(&ui, Some(p)),
             Err(e) => alert(&ui.window, "Not a usable .rdp file", &e),
         }
     });

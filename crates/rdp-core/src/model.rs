@@ -79,7 +79,8 @@ pub struct Redirect {
 impl Default for Redirect {
     fn default() -> Self {
         Self {
-            clipboard: true,
+            // Off by default: with it on, every local clipboard change (a copied password) goes to the server.
+            clipboard: false,
             audio: true,
             printers: false,
             folders: Vec::new(),
@@ -162,6 +163,12 @@ mod tests {
         assert_eq!(split_user("CORP\\bob", "OTHER"), ("CORP\\bob".into(), "OTHER".into()));
         assert_eq!(split_user("bob@example.com", ""), ("bob@example.com".into(), "".into()));
         assert_eq!(split_user("bob", "CORP"), ("bob".into(), "CORP".into()));
+    }
+
+    #[test]
+    fn new_profiles_share_nothing_but_audio_by_default() {
+        let r = Redirect::default();
+        assert!(!r.clipboard && !r.printers && r.folders.is_empty());
     }
 
     #[test]

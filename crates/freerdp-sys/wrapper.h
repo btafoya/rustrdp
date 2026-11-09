@@ -18,6 +18,7 @@
 #include <freerdp/channels/rail.h>
 #include <freerdp/locale/keyboard.h>
 #include <freerdp/window.h>
+#include <winpr/input.h>
 #include <winpr/synch.h>
 #include <winpr/wtypes.h>
 #include <winpr/clipboard.h>

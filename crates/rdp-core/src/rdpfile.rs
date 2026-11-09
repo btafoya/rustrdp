@@ -136,6 +136,7 @@ mod tests {
         p.display.width = 1280;
         p.display.height = 720;
         p.redirect.printers = true;
+        p.redirect.clipboard = true;
         p.redirect.folders.push(SharedFolder {
             name: "Transfer".into(),
             path: "/home/b/Transfer".into(),

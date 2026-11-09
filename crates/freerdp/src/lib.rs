@@ -39,6 +39,17 @@ pub struct CertInfo {
     pub fingerprint: String,
     /// The server presented a different certificate than the one stored.
     pub changed: bool,
+    /// The certificate trusted earlier; set when `changed`.
+    pub old: Option<StoredCert>,
+    /// Why the certificate failed verification (name mismatch, gateway, ...).
+    pub notes: Vec<&'static str>,
+}
+
+#[derive(Clone, Debug)]
+pub struct StoredCert {
+    pub subject: String,
+    pub issuer: String,
+    pub fingerprint: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -122,10 +133,80 @@ pub type Sink = Box<dyn Fn(Event) + Send + Sync>;
 
 /// GDK keycode (X11 keycode; evdev + 8 on Wayland too) → RDP scancode, bit 8 set for extended keys.
 /// Returns 0 for keys RDP has no scancode for.
+///
+/// Uses WinPR's X11-keycode table (`WINPR_KEYCODE_TYPE_XKB`; the `EVDEV` table is indexed by evdev codes, 8 lower)
+/// directly. `freerdp_keyboard_get_rdp_scancode_from_x11_keycode` returns 0 for every key when FreeRDP is built
+/// without X11/Wayland support, as it is here.
 pub fn scancode_from_keycode(keycode: u32) -> u32 {
-    static INIT: std::sync::Once = std::sync::Once::new();
-    INIT.call_once(|| unsafe {
-        freerdp_sys::freerdp_keyboard_init(0);
-    });
-    unsafe { freerdp_sys::freerdp_keyboard_get_rdp_scancode_from_x11_keycode(keycode) }
+    unsafe {
+        let vk = freerdp_sys::GetVirtualKeyCodeFromKeycode(keycode, freerdp_sys::WINPR_KEYCODE_TYPE_XKB);
+        freerdp_sys::GetVirtualScanCodeFromVirtualKeyCode(vk, freerdp_sys::WINPR_KBD_TYPE_IBM_ENHANCED)
+    }
+}
+
+/// Scancodes currently held down, so they can all be released when focus is lost: a key-up that goes
+/// to another window would otherwise leave the remote with a stuck Ctrl/Alt.
+#[derive(Default)]
+pub struct HeldKeys(std::collections::BTreeSet<u32>);
+
+impl HeldKeys {
+    pub fn press(&mut self, scancode: u32) {
+        self.0.insert(scancode);
+    }
+
+    pub fn release(&mut self, scancode: u32) {
+        self.0.remove(&scancode);
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Everything still held, in scancode order; leaves the set empty.
+    pub fn take_all(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.0).into_iter().collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: FreeRDP built without X11/Wayland support never fills its own keycode table, so every key
+    /// mapped to 0 and nothing could be typed. X11 keycode = evdev + 8.
+    #[test]
+    fn keycodes_map_to_rdp_scancodes_without_freerdp_x11_support() {
+        for (name, keycode, scancode) in [
+            ("a", 38, 0x1E),
+            ("Return", 36, 0x1C),
+            ("BackSpace", 22, 0x0E),
+            ("space", 65, 0x39),
+            ("F1", 67, 0x3B),
+            ("Control_L", 37, 0x1D),
+            ("Control_R", 105, 0x11D),
+            ("Super_L", 133, 0x15B),
+            ("Left", 113, 0x14B),
+            ("Delete", 119, 0x153),
+        ] {
+            assert_eq!(scancode_from_keycode(keycode), scancode, "{name} (keycode {keycode})");
+        }
+        assert_eq!(scancode_from_keycode(0), 0, "no key");
+    }
+
+    #[test]
+    fn held_keys_are_released_once_on_focus_loss() {
+        let mut h = HeldKeys::default();
+        h.press(0x1D); // Ctrl
+        h.press(0x38); // Alt
+        h.press(0x38); // auto-repeat
+        h.press(0x1E); // A
+        h.release(0x1E);
+        assert_eq!(h.len(), 2);
+        assert_eq!(h.take_all(), vec![0x1D, 0x38]);
+        assert!(h.take_all().is_empty());
+    }
 }

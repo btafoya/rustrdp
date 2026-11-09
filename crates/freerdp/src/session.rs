@@ -1,6 +1,6 @@
 #![allow(clippy::missing_safety_doc)]
 
-use crate::{settings, CertInfo, CertVerdict, Command, Credentials, Event, Frame, Prompt, Sink};
+use crate::{settings, CertInfo, CertVerdict, Command, Credentials, Event, Frame, Prompt, Sink, StoredCert};
 use freerdp_sys as sys;
 use rdp_core::Profile;
 use std::{
@@ -251,17 +251,32 @@ unsafe fn event_loop(
     }
 }
 
+/// `RUSTRDP_DEBUG_KEYS=1` logs every key the engine sends, and whether FreeRDP accepted it.
+fn debug_keys() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("RUSTRDP_DEBUG_KEYS").is_some())
+}
+
 /// Returns false when the session should end.
 unsafe fn handle_command(inst: *mut sys::freerdp, ctx: *mut sys::rdpContext, cmd: Command) -> bool {
     let input = (*ctx).input;
     let inner = inner_of(inst);
     match cmd {
         Command::Key { scancode, down } => {
-            sys::freerdp_input_send_keyboard_event_ex(input, down as sys::BOOL, 0, scancode);
+            let ok = sys::freerdp_input_send_keyboard_event_ex(input, down as sys::BOOL, 0, scancode);
+            if debug_keys() {
+                eprintln!(
+                    "[keys] engine: key scancode=0x{scancode:x} down={down} -> sent={}",
+                    ok != 0
+                );
+            }
         }
         Command::Unicode { ch, down } => {
             // KBD_FLAGS_RELEASE = 0x8000
-            sys::freerdp_input_send_unicode_keyboard_event(input, if down { 0 } else { 0x8000 }, ch);
+            let ok = sys::freerdp_input_send_unicode_keyboard_event(input, if down { 0 } else { 0x8000 }, ch);
+            if debug_keys() {
+                eprintln!("[keys] engine: unicode 0x{ch:x} down={down} -> sent={}", ok != 0);
+            }
         }
         Command::Mouse { flags, x, y } => {
             sys::freerdp_input_send_mouse_event(input, flags, x, y);
@@ -429,6 +444,21 @@ unsafe extern "C" fn authenticate_ex(
     1
 }
 
+/// Why FreeRDP is asking, from the `VERIFY_CERT_FLAG_*` bits (a changed certificate is reported separately).
+fn cert_notes(flags: u32) -> Vec<&'static str> {
+    let mut notes = Vec::new();
+    if flags & sys::VERIFY_CERT_FLAG_MISMATCH as u32 != 0 {
+        notes.push("The certificate does not match the server name.");
+    }
+    if flags & sys::VERIFY_CERT_FLAG_GATEWAY as u32 != 0 {
+        notes.push("This is the certificate of the gateway, not the server.");
+    }
+    if flags & sys::VERIFY_CERT_FLAG_REDIRECT as u32 != 0 {
+        notes.push("This is the certificate of a redirected server.");
+    }
+    notes
+}
+
 unsafe fn certificate_prompt(inst: *mut sys::freerdp, info: CertInfo) -> u32 {
     let inner = inner_of(inst);
     let (reply, rx) = mpsc::sync_channel(1);
@@ -444,7 +474,7 @@ unsafe extern "C" fn verify_certificate_ex(
     subject: *const c_char,
     issuer: *const c_char,
     fingerprint: *const c_char,
-    _flags: u32,
+    flags: u32,
 ) -> u32 {
     certificate_prompt(
         inst,
@@ -456,6 +486,8 @@ unsafe extern "C" fn verify_certificate_ex(
             issuer: cstr(issuer),
             fingerprint: cstr(fingerprint),
             changed: false,
+            old: None,
+            notes: cert_notes(flags),
         },
     )
 }
@@ -469,10 +501,10 @@ unsafe extern "C" fn verify_changed_certificate_ex(
     subject: *const c_char,
     issuer: *const c_char,
     new_fingerprint: *const c_char,
-    _old_subject: *const c_char,
-    _old_issuer: *const c_char,
-    _old_fingerprint: *const c_char,
-    _flags: u32,
+    old_subject: *const c_char,
+    old_issuer: *const c_char,
+    old_fingerprint: *const c_char,
+    flags: u32,
 ) -> u32 {
     certificate_prompt(
         inst,
@@ -484,6 +516,12 @@ unsafe extern "C" fn verify_changed_certificate_ex(
             issuer: cstr(issuer),
             fingerprint: cstr(new_fingerprint),
             changed: true,
+            old: Some(StoredCert {
+                subject: cstr(old_subject),
+                issuer: cstr(old_issuer),
+                fingerprint: cstr(old_fingerprint),
+            }),
+            notes: cert_notes(flags),
         },
     )
 }
@@ -571,6 +609,13 @@ fn from_utf16le(b: &[u8]) -> String {
     let u: Vec<u16> = b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
     let end = u.iter().position(|&c| c == 0).unwrap_or(u.len());
     String::from_utf16_lossy(&u[..end])
+}
+
+/// Largest clipboard text accepted from the server (UTF-16 bytes); anything bigger is dropped.
+const MAX_CLIPBOARD_BYTES: usize = 4 * 1024 * 1024;
+
+fn remote_text(bytes: &[u8]) -> Option<String> {
+    (bytes.len() <= MAX_CLIPBOARD_BYTES).then(|| from_utf16le(bytes))
 }
 
 unsafe fn cb_inner(c: *mut sys::CliprdrClientContext) -> &'static mut Inner {
@@ -679,10 +724,16 @@ unsafe extern "C" fn cb_server_format_data_response(
     let ok = (*resp).common.msgFlags & sys::CB_RESPONSE_OK as u16 != 0;
     if ok && !(*resp).requestedFormatData.is_null() && (*c).lastRequestedFormatId == sys::CF_UNICODETEXT {
         let bytes = std::slice::from_raw_parts((*resp).requestedFormatData, (*resp).common.dataLen as usize);
-        let text = from_utf16le(bytes);
         let inner = cb_inner(c);
-        inner.last_remote = Some(text.clone());
-        (inner.sink)(Event::ClipboardText(text));
+        match remote_text(bytes) {
+            Some(text) => {
+                inner.last_remote = Some(text.clone());
+                (inner.sink)(Event::ClipboardText(text));
+            }
+            None => (inner.sink)(Event::Notice(
+                "Clipboard text from the server was too large and was ignored".into(),
+            )),
+        }
     }
     CHANNEL_RC_OK
 }
@@ -710,6 +761,20 @@ mod tests {
         // once the channel is up, requests go straight through and leave nothing queued
         assert_eq!(q.request((1000, 700), true), Some((1000, 700)));
         assert_eq!(q.take(), None);
+    }
+
+    #[test]
+    fn cert_notes_explain_why_the_certificate_failed() {
+        assert!(cert_notes(0).is_empty());
+        let n = cert_notes((sys::VERIFY_CERT_FLAG_MISMATCH | sys::VERIFY_CERT_FLAG_GATEWAY) as u32);
+        assert_eq!(n.len(), 2);
+        assert!(n[0].contains("does not match") && n[1].contains("gateway"));
+    }
+
+    #[test]
+    fn remote_clipboard_text_is_capped() {
+        assert_eq!(remote_text(&utf16le_nul("hi")), Some("hi".into()));
+        assert_eq!(remote_text(&vec![b'a'; MAX_CLIPBOARD_BYTES + 2]), None);
     }
 
     #[test]

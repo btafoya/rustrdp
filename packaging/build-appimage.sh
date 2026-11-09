@@ -8,9 +8,23 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 
-cargo build --release -p rustrdp
+# Every build bumps the patch version in the workspace Cargo.toml so builds never share a filename.
+# NO_BUMP=1 rebuilds the current version (e.g. after a failed run).
+if [ -z "${NO_BUMP:-}" ]; then
+  cur=$(sed -n 's/^version = "\([0-9]*\.[0-9]*\.[0-9]*\)"$/\1/p' Cargo.toml | head -1)
+  [ -n "$cur" ] || { echo "no version in Cargo.toml" >&2; exit 1; }
+  next="${cur%.*}.$((${cur##*.} + 1))"
+  sed -i "0,/^version = \"$cur\"\$/s//version = \"$next\"/" Cargo.toml
+  echo "version $cur -> $next"
+fi
+
+# Bundle the FreeRDP this build was linked against: target/release/build keeps one out dir per past
+# configuration, so `find | head -1` can pick a stale one. Cargo reports the right dir.
+fr=$(cargo build --release -p rustrdp --message-format=json |
+  jq -r 'select(.reason == "build-script-executed" and (.package_id | contains("freerdp-sys"))) | .out_dir' |
+  tail -1)/lib
+[ -f "$fr/libfreerdp3.so.3" ] || { echo "libfreerdp3.so.3 not found in $fr" >&2; exit 1; }
 bin=target/release/rustrdp
-fr=$(dirname "$(find target/release/build -path '*/out/lib/libfreerdp3.so.3' | head -1)")
 
 app=target/appimage/AppDir
 rm -rf "$app"
@@ -24,7 +38,8 @@ cp data/com.briantafoya.rustrdp.svg "$app/"
 cat >target/appimage/AppRun <<'EOF'
 #!/bin/sh
 here=$(dirname "$(readlink -f "$0")")
-export LD_LIBRARY_PATH="$here/usr/lib:$LD_LIBRARY_PATH"
+# No trailing colon when unset: an empty entry would put the current directory on the library path.
+export LD_LIBRARY_PATH="$here/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export XDG_DATA_DIRS="$here/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 export GSETTINGS_SCHEMA_DIR="$here/usr/share/glib-2.0/schemas"
 exec "$here/usr/bin/rustrdp" "$@"
@@ -32,9 +47,9 @@ EOF
 chmod +x target/appimage/AppRun
 
 cd target/appimage
-LD_LIBRARY_PATH="$root/$fr" APPIMAGE_EXTRACT_AND_RUN=1 VERSION=$(cargo pkgid -p rustrdp --manifest-path "$root/Cargo.toml" | sed 's/.*[#@]//') \
+LD_LIBRARY_PATH="$fr" APPIMAGE_EXTRACT_AND_RUN=1 VERSION=$(cargo pkgid -p rustrdp --manifest-path "$root/Cargo.toml" | sed 's/.*[#@]//') \
   linuxdeploy --appdir AppDir --executable "$root/$bin" \
-    --library "$root/$fr/libfreerdp3.so.3" --library "$root/$fr/libfreerdp-client3.so.3" --library "$root/$fr/libwinpr3.so.3" \
+    --library "$fr/libfreerdp3.so.3" --library "$fr/libfreerdp-client3.so.3" --library "$fr/libwinpr3.so.3" \
     --desktop-file AppDir/com.briantafoya.rustrdp.desktop --icon-file AppDir/com.briantafoya.rustrdp.svg \
     --custom-apprun AppRun --output appimage
 ls -l "$root"/target/appimage/*.AppImage

@@ -8,7 +8,8 @@ use std::{cell::RefCell, rc::Rc};
 use uuid::Uuid;
 
 pub fn present(parent: &adw::ApplicationWindow, store: SharedStore, existing: Option<Profile>, on_saved: Rc<dyn Fn()>) {
-    let is_new = existing.is_none();
+    // Also "new" when handed a profile that is not stored yet (an imported .rdp awaiting review).
+    let is_new = existing.as_ref().map_or(true, |p| store.borrow().get(p.id).is_none());
     let p = existing.unwrap_or_else(|| Profile::new("", ""));
     let groups: Vec<(Uuid, String)> = store.borrow().groups().iter().map(|g| (g.id, g.name.clone())).collect();
 

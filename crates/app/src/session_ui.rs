@@ -25,6 +25,8 @@ fn send(s: &Shared, cmd: Command) {
 /// How the remote desktop of a fixed size is laid out in the window (see `ViewMode`).
 struct View {
     mode: Cell<ViewMode>,
+    /// "Match window": the server resizes the desktop to the window (needs display control; Dynamic profiles).
+    dynamic: Cell<bool>,
     /// Remote desktop size; (0, 0) until connected.
     size: Cell<(u32, u32)>,
     area: gtk::DrawingArea,
@@ -67,6 +69,14 @@ impl View {
     fn apply(&self) {
         let (sw, sh) = self.size.get();
         if sw == 0 || sh == 0 {
+            return;
+        }
+        if self.dynamic.get() {
+            // The desktop follows the window, so the area just fills it.
+            self.scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Never);
+            self.area.set_content_width(0);
+            self.area.set_content_height(0);
+            self.area.queue_draw();
             return;
         }
         let chrome = self.header.height();
@@ -132,6 +142,17 @@ impl View {
 
 const WINDOW_SIZE: (i32, i32) = (1280, 800);
 
+/// `RUSTRDP_DEBUG_KEYS=1` prints key, focus and send details to stderr (for "keyboard does nothing" reports).
+fn debug_keys() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("RUSTRDP_DEBUG_KEYS").is_some())
+}
+
+/// The key's character as a UTF-16 unit (BMP only), for keys without an RDP scancode.
+fn unicode_of(keyval: gtk::gdk::Key) -> Option<u16> {
+    keyval.to_unicode().and_then(|c| u16::try_from(c as u32).ok())
+}
+
 pub fn open(app: &adw::Application, mut profile: Profile, password: Option<String>) {
     // Dynamic resolution: start the desktop at about the drawing area's size (window minus header bar and
     // shadow) instead of the profile's, so the first frame already fits. Event::Connected corrects any difference.
@@ -173,33 +194,48 @@ pub fn open(app: &adw::Application, mut profile: Profile, password: Option<Strin
         &profile.name,
         &format!("{}:{}", profile.host, profile.port),
     )));
-    let cad = gtk::Button::builder().label("Ctrl+Alt+Del").build();
+    // Header buttons must not take keyboard focus: it belongs to the remote desktop, and a focused button
+    // swallows every keystroke until the desktop is clicked again.
+    let cad = gtk::Button::builder()
+        .label("Ctrl+Alt+Del")
+        .focus_on_click(false)
+        .build();
     let full = gtk::Button::builder()
         .icon_name("view-fullscreen-symbolic")
         .tooltip_text("Fullscreen")
+        .focus_on_click(false)
         .build();
     let bye = gtk::Button::builder()
         .label("Disconnect")
         .css_classes(["destructive-action"])
+        .focus_on_click(false)
         .build();
     header.pack_start(&cad);
     header.pack_end(&bye);
     header.pack_end(&full);
     let menu = gio::Menu::new();
+    if dynamic {
+        menu.append(Some("Match window (resize desktop)"), Some("win.view::match"));
+    }
     menu.append(Some("Actual size (scroll)"), Some("win.view::actual"));
     menu.append(Some("Fit window to session"), Some("win.view::fit"));
     menu.append(Some("Scale session to window"), Some("win.view::scale"));
-    header.pack_end(
-        &gtk::MenuButton::builder()
-            .icon_name("zoom-fit-best-symbolic")
-            .tooltip_text(if dynamic {
-                "View (the desktop already follows the window; use a fixed size in the profile)"
-            } else {
-                "View"
-            })
-            .menu_model(&menu)
-            .build(),
-    );
+    let view_button = gtk::MenuButton::builder()
+        .icon_name("zoom-fit-best-symbolic")
+        .tooltip_text("View")
+        .menu_model(&menu)
+        .focus_on_click(false)
+        .build();
+    if let Some(popover) = view_button.popover() {
+        // GTK hands focus back to the menu button when the popover closes; give it to the desktop instead.
+        popover.connect_closed({
+            let area = area.clone();
+            move |_| {
+                area.grab_focus();
+            }
+        });
+    }
+    header.pack_end(&view_button);
     let toolbar = adw::ToolbarView::new();
     toolbar.add_top_bar(&header);
     toolbar.set_content(Some(&toasts));
@@ -215,7 +251,7 @@ pub fn open(app: &adw::Application, mut profile: Profile, password: Option<Strin
         window.fullscreen();
     }
 
-    // Dynamic resolution already makes the desktop match the window, so the view mode only applies otherwise.
+    // A Dynamic profile starts as "Match window" (the desktop follows the window); the View menu can leave it.
     let initial = if dynamic {
         ViewMode::Actual
     } else {
@@ -223,6 +259,7 @@ pub fn open(app: &adw::Application, mut profile: Profile, password: Option<Strin
     };
     let view = Rc::new(View {
         mode: Cell::new(initial),
+        dynamic: Cell::new(dynamic),
         size: Cell::new((0, 0)),
         area: area.clone(),
         scroll: scroll.clone(),
@@ -230,24 +267,43 @@ pub fn open(app: &adw::Application, mut profile: Profile, password: Option<Strin
         header: header.clone(),
         toasts: toasts.clone(),
     });
-    if !dynamic {
-        let name = match initial {
-            ViewMode::Actual => "actual",
-            ViewMode::FitWindow => "fit",
-            ViewMode::Scale => "scale",
+    {
+        let name = if dynamic {
+            "match"
+        } else {
+            match initial {
+                ViewMode::Actual => "actual",
+                ViewMode::FitWindow => "fit",
+                ViewMode::Scale => "scale",
+            }
         };
         let action = gio::SimpleAction::new_stateful("view", Some(glib::VariantTy::STRING), &name.to_variant());
         action.connect_activate({
-            let view = view.clone();
+            let (view, session) = (view.clone(), session.clone());
             move |a, param| {
                 let Some(param) = param else { return };
-                view.mode.set(match param.str() {
-                    Some("fit") => ViewMode::FitWindow,
-                    Some("scale") => ViewMode::Scale,
+                let choice = param.str().unwrap_or("actual");
+                view.dynamic.set(choice == "match");
+                view.mode.set(match choice {
+                    "fit" => ViewMode::FitWindow,
+                    "scale" => ViewMode::Scale,
                     _ => ViewMode::Actual,
                 });
                 a.set_state(param);
                 view.apply();
+                if choice == "match" {
+                    // Ask the server for a desktop the size of the window right away.
+                    let (w, h) = (view.area.width(), view.area.height());
+                    if w > 0 && h > 0 {
+                        send(
+                            &session,
+                            Command::Resize {
+                                width: w as u32,
+                                height: h as u32,
+                            },
+                        );
+                    }
+                }
             }
         });
         window.add_action(&action);
@@ -266,11 +322,6 @@ pub fn open(app: &adw::Application, mut profile: Profile, password: Option<Strin
                 });
             }
         });
-    } else {
-        // The menu stays visible but greyed out: the desktop already follows the window.
-        let action = gio::SimpleAction::new_stateful("view", Some(glib::VariantTy::STRING), &"actual".to_variant());
-        action.set_enabled(false);
-        window.add_action(&action);
     }
 
     // ---- drawing
@@ -295,11 +346,16 @@ pub fn open(app: &adw::Application, mut profile: Profile, password: Option<Strin
 
     // ---- input
     let key = gtk::EventControllerKey::new();
+    let held = Rc::new(RefCell::new(freerdp::HeldKeys::default()));
     key.connect_key_pressed({
-        let s = session.clone();
-        move |_, _, keycode, _| {
+        let (s, held) = (session.clone(), held.clone());
+        move |_, keyval, keycode, state| {
             let sc = freerdp::scancode_from_keycode(keycode);
+            if debug_keys() {
+                eprintln!("[keys] press keycode={keycode} keyval={keyval:?} state={state:?} scancode=0x{sc:x}");
+            }
             if sc != 0 {
+                held.borrow_mut().press(sc);
                 send(
                     &s,
                     Command::Key {
@@ -307,15 +363,19 @@ pub fn open(app: &adw::Application, mut profile: Profile, password: Option<Strin
                         down: true,
                     },
                 );
+            } else if let Some(ch) = unicode_of(keyval) {
+                // No RDP scancode for this key: type the character instead.
+                send(&s, Command::Unicode { ch, down: true });
             }
             glib::Propagation::Stop
         }
     });
     key.connect_key_released({
-        let s = session.clone();
-        move |_, _, keycode, _| {
+        let (s, held) = (session.clone(), held.clone());
+        move |_, keyval, keycode, _| {
             let sc = freerdp::scancode_from_keycode(keycode);
             if sc != 0 {
+                held.borrow_mut().release(sc);
                 send(
                     &s,
                     Command::Key {
@@ -323,10 +383,35 @@ pub fn open(app: &adw::Application, mut profile: Profile, password: Option<Strin
                         down: false,
                     },
                 );
+            } else if let Some(ch) = unicode_of(keyval) {
+                send(&s, Command::Unicode { ch, down: false });
             }
         }
     });
     area.add_controller(key);
+
+    // Focus leaving (menu, dialog, Alt+Tab) swallows the key-ups: release what is held so the remote has no stuck modifier.
+    let focus = gtk::EventControllerFocus::new();
+    focus.connect_enter(|_| {
+        if debug_keys() {
+            eprintln!("[keys] desktop gained keyboard focus");
+        }
+    });
+    focus.connect_leave({
+        let (s, held) = (session.clone(), held.clone());
+        move |_| {
+            if debug_keys() {
+                eprintln!(
+                    "[keys] desktop lost keyboard focus; releasing {} held keys",
+                    held.borrow().len()
+                );
+            }
+            for scancode in held.borrow_mut().take_all() {
+                send(&s, Command::Key { scancode, down: false });
+            }
+        }
+    });
+    area.add_controller(focus);
 
     let click = gtk::GestureClick::builder().button(0).build();
     let button_flag = |b: u32| match b {
@@ -391,16 +476,16 @@ pub fn open(app: &adw::Application, mut profile: Profile, password: Option<Strin
     });
     area.add_controller(wheel);
 
-    // ---- resize (debounced) in dynamic mode
+    // ---- resize (debounced) while "Match window" is on
     if dynamic {
         let generation = Rc::new(Cell::new(0u32));
         area.connect_resize({
-            let s = session.clone();
+            let (s, view) = (session.clone(), view.clone());
             move |_, w, h| {
                 generation.set(generation.get() + 1);
-                let (g, generation, s) = (generation.get(), generation.clone(), s.clone());
+                let (g, generation, s, view) = (generation.get(), generation.clone(), s.clone(), view.clone());
                 glib::timeout_add_local_once(Duration::from_millis(150), move || {
-                    if generation.get() == g && w > 0 && h > 0 {
+                    if generation.get() == g && view.dynamic.get() && w > 0 && h > 0 {
                         send(
                             &s,
                             Command::Resize {
@@ -432,8 +517,9 @@ pub fn open(app: &adw::Application, mut profile: Profile, password: Option<Strin
 
     // ---- toolbar
     cad.connect_clicked({
-        let s = session.clone();
+        let (s, area) = (session.clone(), area.clone());
         move |_| {
+            area.grab_focus();
             // Ctrl (0x1D), Alt (0x38), Delete (extended 0x153): down in order, up reversed
             let keys = [0x1Du32, 0x38, 0x153];
             for k in keys {
@@ -457,8 +543,11 @@ pub fn open(app: &adw::Application, mut profile: Profile, password: Option<Strin
         }
     });
     full.connect_clicked({
-        let w = window.clone();
-        move |_| w.set_fullscreened(!w.is_fullscreen())
+        let (w, area) = (window.clone(), area.clone());
+        move |_| {
+            w.set_fullscreened(!w.is_fullscreen());
+            area.grab_focus();
+        }
     });
     bye.connect_clicked({
         let s = session.clone();
@@ -492,16 +581,15 @@ pub fn open(app: &adw::Application, mut profile: Profile, password: Option<Strin
                 match ev {
                     Event::Connected { width, height } | Event::Resized { width, height } => {
                         view.size.set((width, height));
-                        if !dynamic {
-                            view.apply();
-                        }
+                        view.apply();
                         reset_surface(&session, &surface, width, height);
                         area.queue_draw();
                         area.grab_focus();
                         // The desktop starts at an estimated size; ask for the real window size once connected
                         // (the engine holds it until display control is up). Only on Connected: no resize loop.
                         let (w, h) = (area.width(), area.height());
-                        if connected && dynamic && w > 0 && h > 0 && (w as u32, h as u32) != (width, height) {
+                        if connected && view.dynamic.get() && w > 0 && h > 0 && (w as u32, h as u32) != (width, height)
+                        {
                             send(
                                 &session,
                                 Command::Resize {
@@ -593,15 +681,26 @@ fn cert_dialog(parent: &adw::ApplicationWindow, info: CertInfo, reply: std::sync
     } else {
         "Certificate not trusted"
     };
-    let body = format!(
-        "{}:{}\n\nSubject: {}\nIssuer: {}\nSHA-256: {}\n\nCompare the fingerprint with the one on the server before continuing.{}",
-        info.host,
-        info.port,
+    let mut body = format!("{}:{}\n", info.host, info.port);
+    for note in &info.notes {
+        body.push_str(&format!("\n{note}"));
+    }
+    body.push_str(&format!(
+        "\n\n{}Subject: {}\nIssuer: {}\nSHA-256: {}",
+        if info.changed { "New certificate\n" } else { "" },
         dash(&info.subject),
         dash(&info.issuer),
-        info.fingerprint,
-        if info.changed { "\n\nThe server presented a different certificate than the one stored." } else { "" }
-    );
+        info.fingerprint
+    ));
+    if let Some(old) = &info.old {
+        body.push_str(&format!(
+            "\n\nStored certificate\nSubject: {}\nIssuer: {}\nSHA-256: {}\n\nThe server presented a different certificate than the one you trusted.",
+            dash(&old.subject),
+            dash(&old.issuer),
+            old.fingerprint
+        ));
+    }
+    body.push_str("\n\nCompare the fingerprint with the one on the server before continuing.");
     let d = adw::AlertDialog::new(Some(heading), Some(&body));
     d.add_response("reject", "Cancel");
     d.add_response("once", "Connect once");
