@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1b3a5c"/><stop offset="1" stop-color="#2d6a9f"/></linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+  <rect x="18" y="26" width="92" height="60" rx="7" fill="#0f2238" stroke="#fff" stroke-width="5"/>
+  <rect x="54" y="90" width="20" height="8" fill="#fff"/>
+  <rect x="38" y="98" width="52" height="7" rx="3.5" fill="#fff"/>
+  <circle cx="92" cy="86" r="28" fill="#fff"/>
+  <path transform="translate(92 86) scale(0.65)" fill="#ce412b" fill-rule="evenodd" d="M27.4,-5.6 L35.7,-4.7 L35.7,4.7 L27.4,5.6 L23.3,15.5 L28.5,21.9 L21.9,28.5 L15.5,23.3 L5.6,27.4 L4.7,35.7 L-4.7,35.7 L-5.6,27.4 L-15.5,23.3 L-21.9,28.5 L-28.5,21.9 L-23.3,15.5 L-27.4,5.6 L-35.7,4.7 L-35.7,-4.7 L-27.4,-5.6 L-23.3,-15.5 L-28.5,-21.9 L-21.9,-28.5 L-15.5,-23.3 L-5.6,-27.4 L-4.7,-35.7 L4.7,-35.7 L5.6,-27.4 L15.5,-23.3 L21.9,-28.5 L28.5,-21.9 L23.3,-15.5 Z M11,0 a11,11 0 1,0 -22,0 a11,11 0 1,0 22,0 Z"/>
+</svg>

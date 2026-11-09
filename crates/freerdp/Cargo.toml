@@ -1,0 +1,10 @@
+[package]
+name = "freerdp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+freerdp-sys = { path = "../freerdp-sys" }
+rdp-core = { path = "../rdp-core" }
+libc = "0.2"

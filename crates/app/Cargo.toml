@@ -1,0 +1,15 @@
+[package]
+name = "rustrdp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "GTK4 RDP client with a connection manager, built on FreeRDP"
+
+[dependencies]
+freerdp = { path = "../freerdp" }
+rdp-core = { path = "../rdp-core" }
+async-channel = "2"
+# GTK 4.12 / libadwaita 1.5 floor = Ubuntu 24.04 LTS
+gtk = { package = "gtk4", version = "0.9", features = ["v4_12"] }
+adw = { package = "libadwaita", version = "0.7", features = ["v1_5"] }
+uuid = { version = "1", features = ["v4"] }

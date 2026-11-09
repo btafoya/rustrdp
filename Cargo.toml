@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["crates/freerdp-sys", "crates/freerdp", "crates/rdp-core", "crates/app"]
+# app needs GTK4 + libadwaita dev packages; build it explicitly with `-p rustrdp`
+default-members = ["crates/freerdp-sys", "crates/freerdp", "crates/rdp-core"]
+
+[workspace.package]
+version = "0.1.4"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["Brian Tafoya <btafoya@briantafoya.com>"]
+
+[profile.release]
+lto = "thin"

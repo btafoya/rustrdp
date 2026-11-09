@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=rustrdp
+Comment=RDP client with a connection manager
+Exec=rustrdp
+Icon=com.briantafoya.rustrdp
+StartupWMClass=rustrdp
+Categories=Network;RemoteAccess;
+MimeType=application/x-rdp;
+Terminal=false
