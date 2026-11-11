@@ -5,7 +5,7 @@ members = ["crates/freerdp-sys", "crates/freerdp", "crates/rdp-core", "crates/ap
 default-members = ["crates/freerdp-sys", "crates/freerdp", "crates/rdp-core"]
 
 [workspace.package]
-version = "0.1.11"
+version = "0.1.12"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Brian Tafoya <btafoya@briantafoya.com>"]

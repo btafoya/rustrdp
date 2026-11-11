@@ -147,6 +147,19 @@ fn last_error(ctx: *mut sys::rdpContext) -> String {
     }
 }
 
+/// OpenSSL asks FreeRDP's transport BIO about kernel TLS (BIO_CTRL 73/76) on every read, and FreeRDP logs each
+/// "Unsupported BIO_CTRL" as an error with a 20-line backtrace: thousands of lines a second. Only fatal
+/// messages from that logger are shown, unless the user set `WLOG_LEVEL`/`WLOG_FILTER` to debug something.
+unsafe fn quiet_transport_log() {
+    if std::env::var_os("WLOG_LEVEL").is_some() || std::env::var_os("WLOG_FILTER").is_some() {
+        return;
+    }
+    let log = sys::WLog_Get(c"com.freerdp.core.transport".as_ptr());
+    if !log.is_null() {
+        sys::WLog_SetLogLevel(log, sys::WLOG_FATAL as u32);
+    }
+}
+
 fn run(
     profile: Profile,
     password: Option<String>,
@@ -161,6 +174,7 @@ fn run(
     static REGISTER_ADDINS: std::sync::Once = std::sync::Once::new();
     REGISTER_ADDINS.call_once(|| unsafe {
         sys::freerdp_register_addin_provider(Some(sys::freerdp_channels_load_static_addin_entry), 0);
+        quiet_transport_log();
     });
     unsafe {
         let inst = sys::freerdp_new();
